@@ -42,33 +42,74 @@ public class UCTAgent
     public static class MCTSNode
         extends Node
     {
-        Map<Move, Node> children;
+        Map<Integer, Node> children;
 
         public MCTSNode(final GameView game,
                         final int logicalPlayerIdx,
                         final Node parent)
         {
             super(game, logicalPlayerIdx, parent);
-            children = new HashMap<Move, Node>();
+            children = new HashMap<Integer, Node>();
         }
 
-        public Map<Move, Node> getChildren() {
+        public Map<Integer, Node> getChildren() {
             return children;
         }
 
         @Override
         public Node getChild(final Move move)
         {
-            if (getChildren().containsKey(move)) {
-                return getChildren().get(move);
+            if (move == null && getChildren().containsKey(-1)) {
+                //System.out.println("Reusing move: " + move);
+                return getChildren().get(-1);
+            }
+            if (move != null && getChildren().containsKey(move.getCardToPlayIdx())) {
+                //System.out.println("Reusing move: " + move);
+                return getChildren().get(move.getCardToPlayIdx());
             }
 
-            Game g =  new Game(this.getGameView());
-            g.resolveMove(move);
+            Game g = constructGame(getGameView());
+            boolean resolvedNull = false;
+
+            if (move == null) {
+                g.resolveMove(null);
+            } else if (this.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
+                if (getChildren().containsKey(-1)) {
+                    return getChildren().get(-1);
+                }
+                Hand h = g.getCurrentPlayerHand();
+                g.drawTotal(h, g.getUnresolvedCards().total());
+                g.getUnresolvedCards().clear();
+                resolvedNull = true;
+                g.resolveMove(null);
+            } else if (this.getNodeState() == NodeState.NO_LEGAL_MOVES_MAY_PLAY_DRAWN_CARD) {
+                int dIdx = g.drawCard(g.getCurrentPlayerHand());
+                Card c = g.getCurrentPlayerHand().getCard(dIdx);
+                if (!c.canBePlayedAsDrawCard(g) || move.getCardToPlayIdx() == Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.KEEP_CARD_MOVE_IDX) {
+                    if (getChildren().containsKey(-1)) {
+                        return getChildren().get(-1);
+                    }
+                    resolvedNull = true;
+                    g.resolveMove(null);
+                } else {
+                    if (c.isWild()) {
+                        g.resolveMove(Move.createMove(g.getAgent(getLogicalPlayerIdx()), dIdx, bestColor(getGameView().getHandView(getLogicalPlayerIdx()))));
+                    } else {    
+                        g.resolveMove(Move.createMove(g.getAgent(getLogicalPlayerIdx()), dIdx));
+                    }
+                }
+            } else if (this.getNodeState() == NodeState.HAS_LEGAL_MOVES) {
+                g.resolveMove(move);
+            }
 
             int nextPlayer = g.getPlayerOrder().getCurrentLogicalPlayerIdx();
             Node child = new MCTSNode(g.getOmniscientView(), nextPlayer, this);
-            getChildren().put(move, child);
+            if (move != null && resolvedNull == false) {
+                getChildren().put(move.getCardToPlayIdx(), child);
+            } else {
+                getChildren().put(-1, child);
+            }
+            
             return child;
         }
     }
@@ -101,14 +142,14 @@ public class UCTAgent
         Node root = new MCTSNode(rootGame.getOmniscientView(),
                                 rootGame.getPlayerOrder().getCurrentLogicalPlayerIdx(),
                                 null);
-        
+
         //used to deterimine which player's perspective we are doing the search from for the backpropagation step
         int playerIdx = this.getLogicalPlayerIdx();
         long startTime = System.currentTimeMillis();
 
         //time based iteration so we can figure out the whole thing
         while (!Thread.currentThread().isInterrupted()
-            && System.currentTimeMillis() - startTime < this.searchBudgetInMs) {
+            && System.currentTimeMillis() - startTime < this.searchBudgetInMs - 100) {
             expandNode(root, playerIdx);
         }
 
@@ -132,10 +173,10 @@ public class UCTAgent
 
             if (trav.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
                 // Nothing to be done here although there's maybe something that needs updates for actually manually drawing cards
-                Move m = Move.createMove(this, Node.NoLegalMovesIdxDefaults.DrawUnresolvedCardsIdxs.MOVE_IDX);
+                Move m = Move.createMove(constructGame(trav.getGameView()).getAgent(trav.getLogicalPlayerIdx()), Node.NoLegalMovesIdxDefaults.DrawUnresolvedCardsIdxs.MOVE_IDX);
 
                 // If the qCount is 0 then the node is unexpanded so end the while loop to expand that node
-                if (trav.getQCount(Node.NoLegalMovesIdxDefaults.DrawUnresolvedCardsIdxs.MOVE_IDX) == 0) {
+                if (trav.getQCount(0) == 0) {
                     s.push(Node.NoLegalMovesIdxDefaults.DrawUnresolvedCardsIdxs.MOVE_IDX);
                     trav = trav.getChild(m);
                     newNode = true;
@@ -148,12 +189,12 @@ public class UCTAgent
                 int playIdx = Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.PLAY_CARD_MOVE_IDX;
 
                 // In either of the first cases, one of the two hasn't yet been expanded so we just expand that node
-                if (trav.getQCount(keepIdx) == 0) {
-                    Move m = Move.createMove(this, keepIdx);
+                if (trav.getQCount(0) == 0) {
+                    //Move m = Move.createMove(this, keepIdx);
                     s.push(keepIdx);
                     trav = trav.getChild(makeTreeMove(trav, keepIdx, false));
                     newNode = true;
-                } else if (trav.getQCount(playIdx) == 0) {
+                } else if (trav.getQCount(1) == 0) {
                     Move m = makeTreeMove(trav, playIdx, false);
                     s.push(playIdx);
                     trav = trav.getChild(m);
@@ -174,7 +215,7 @@ public class UCTAgent
                 for (Integer j : trav.getOrderedLegalMoves()) {
                     if (trav.getQCount(i) == 0) {
                         // If this is the case then we need to expand this unexplored node
-                        Move m = makeTreeMove(trav, i, false);
+                        Move m = makeTreeMove(trav, j, false);
                         s.push(i);
                         trav = trav.getChild(m);
 
@@ -188,23 +229,33 @@ public class UCTAgent
                     // If the boolean was never set to false then we just use UCT to choose the best option
                     int idx = exploreIdx(trav);
                     Move m = makeTreeMove(trav, idx, false);
-                    s.push(idx);
+                    for (int j = 0; j < trav.getOrderedLegalMoves().size(); j++) {
+                        if (trav.getOrderedLegalMoves().get(j) == idx) {
+                            s.push(j);
+                            break;
+                        }
+                    }
                     trav = trav.getChild(m);
                 }
             }
         }
 
-        // Expand the node through a rollout
         int outcomeIdx = rollout(trav);
 
         // Keep backtracking using the parent pointers until the root
-        //made a comparison change this to while trav.getParent() != null so we don't try to update the root node's q values
-        while (trav.getParent() != null && !s.isEmpty()) {
+        while (trav.getParent() != null) {
             //get move index from stack so we can update corrent move values
-            int moveIdx = s.pop();
-            // Go up to parent
-            //made new variable kinda like linked list traversal
+            int moveIdx = s.pop(); 
             Node travParent = trav.getParent();
+            if (travParent.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
+                moveIdx = 0;
+            } else if (travParent.getNodeState() == NodeState.NO_LEGAL_MOVES_MAY_PLAY_DRAWN_CARD) {
+                if (moveIdx == Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.KEEP_CARD_MOVE_IDX) {
+                    moveIdx = 0;
+                } else {
+                    moveIdx = 1;
+                }
+            }
 
             // Update the count
             travParent.setQCount(moveIdx, travParent.getQCount(moveIdx) + 1);
@@ -216,7 +267,6 @@ public class UCTAgent
             //update the node
             trav = travParent;
         }
-
         // Return the root node
         return cNode;
     }
@@ -251,16 +301,15 @@ public class UCTAgent
             total += cNode.getQCount(i);
         }
 
-        int j = 0;
+        //int j = 0;
         int maxIdx = -1;
         float maxBound = -1;
         // Use the helper method and conditional logic to perform the argmax
         for (int i = 0; i < cNode.getOrderedLegalMoves().size(); i++) {
             float bound = calc(i, cNode, total);
-            j += 1;
             if (maxBound == -1 || bound > maxBound) {
                 maxBound = bound;
-                maxIdx = i;
+                maxIdx = cNode.getOrderedLegalMoves().get(i);
             }
         }
 
@@ -334,57 +383,67 @@ public class UCTAgent
 
     // Return the logical player index of the winning player from this rollout
     public int rollout(Node n) {
-        Game sim = new Game(n.getGameView());
+        // If the node is terminal return the current players index
+        if (n.isTerminal()) {
+            return findWinningPlayer(n.getGameView());
+            //return n.getLogicalPlayerIdx();
+        }
 
-        //rewrote this part such that we are doing the rollout based on the node state and using the helper function to create moves instead of just doing random moves, this should make the rollout more accurate and hopefully lead to better move choices
-        while (true) {
-            Node simNode = new MCTSNode(sim.getOmniscientView(),
-                                        sim.getPlayerOrder().getCurrentLogicalPlayerIdx(),
-                                        null);
+        Game g = constructGame(n.getGameView());
 
-            if (simNode.isTerminal()) {
-                return findWinningPlayer(simNode.getGameView());
-            }
+        if (n.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
+            // Just recurse on the next player with no card played
+            return rollout(n.getChild(Move.createMove(g.getAgent(n.getLogicalPlayerIdx()), Node.NoLegalMovesIdxDefaults.DrawUnresolvedCardsIdxs.MOVE_IDX)));
+        } else if (n.getNodeState() == NodeState.NO_LEGAL_MOVES_MAY_PLAY_DRAWN_CARD) {
 
-            Move move;
-            if (simNode.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
-                move = makeTreeMove(simNode, Node.NoLegalMovesIdxDefaults.DrawUnresolvedCardsIdxs.MOVE_IDX, true);
-            } else if (simNode.getNodeState() == NodeState.NO_LEGAL_MOVES_MAY_PLAY_DRAWN_CARD) {
-                int actionIdx = getRandom().nextInt(2);
-                if (actionIdx == 0) {
-                    actionIdx = Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.KEEP_CARD_MOVE_IDX;
-                } else {
-                    actionIdx = Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.PLAY_CARD_MOVE_IDX;
-                }
-                move = makeTreeMove(simNode, actionIdx, true);
-            } else if (simNode.getNodeState() == NodeState.HAS_LEGAL_MOVES) {
-                int actionIdx = getRandom().nextInt(simNode.getOrderedLegalMoves().size());
-                move = makeTreeMove(simNode, actionIdx, true);
+            // Randomly choose between keeping or playing drawn card. Also choose random color if wild
+            int choice = getRandom().nextInt(2);
+            if (choice == 0) {
+                return rollout(n.getChild(Move.createMove(g.getAgent(n.getLogicalPlayerIdx()), Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.KEEP_CARD_MOVE_IDX)));
             } else {
-                throw new IllegalStateException("Unexpected node state: " + simNode.getNodeState());
+                Card c = g.getCurrentPlayerHand().getCard(Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.PLAY_CARD_MOVE_IDX);
+                if (c.canBePlayedAsDrawCard(g)) {
+                    if (c.isWild()) {
+                        return rollout(n.getChild(Move.createMove(g.getAgent(n.getLogicalPlayerIdx()), Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.PLAY_CARD_MOVE_IDX, Color.getRandomColor(getRandom()))));
+                    }
+                    return rollout(n.getChild(Move.createMove(g.getAgent(n.getLogicalPlayerIdx()), Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.PLAY_CARD_MOVE_IDX)));
+                } else {
+                    return rollout(n.getChild(null));
+                }
             }
-
-            sim.resolveMove(move);
+        } else if (n.getNodeState() == NodeState.HAS_LEGAL_MOVES) {
+            // Choose random legal move
+            int choice = getRandom().nextInt(n.getOrderedLegalMoves().size());
+            Card c = g.getCurrentPlayerHand().getCard(n.getOrderedLegalMoves().get(choice));
+            if (c.isWild()) {
+                // Use random color if wild card
+                return rollout(n.getChild(Move.createMove(g.getAgent(n.getLogicalPlayerIdx()), n.getOrderedLegalMoves().get(choice), Color.getRandomColor(getRandom()))));
+            }
+            return rollout(n.getChild(Move.createMove(g.getAgent(n.getLogicalPlayerIdx()), n.getOrderedLegalMoves().get(choice))));
+        } else {
+            return rollout(n.getChild(null));
         }
     }
 
     //helper function to create a move based on the node and action index given, also takes in boolean to determine if we are doing random colors or not
     private Move makeTreeMove(final Node node, final int actionIdx, final boolean randomColor) {
+        Game g = constructGame(node.getGameView());
+        Agent curAgent = g.getAgent(node.getLogicalPlayerIdx());
         //check if we have no legal moves and still need to draw a a card
         if (node.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
-            return Move.createMove(this, actionIdx);
+            return Move.createMove(curAgent, actionIdx);
         }
 
         //check if we have no legal moves but can play the drawn card
         if (node.getNodeState() == NodeState.NO_LEGAL_MOVES_MAY_PLAY_DRAWN_CARD) {
             if (actionIdx == Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.KEEP_CARD_MOVE_IDX) {
-                return Move.createMove(this, actionIdx);
+                return Move.createMove(curAgent, actionIdx);
             }
 
             //initalize hand view and drawn card based on the node's game view and logical player index
             HandView h = node.getGameView().getHandView(node.getLogicalPlayerIdx());
-            Card c = h.getCard(h.size() - 1);
-
+            //Card c = h.getCard(h.size() - 1);
+            Card c = h.getCard(Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.PLAY_CARD_MOVE_IDX);
             //if the drawn card is wild then we need to choose a color for the move
             if (c.isWild()) {
                 Color color;
@@ -394,14 +453,15 @@ public class UCTAgent
                     color = bestColor(h);
                 }
 
-                return Move.createMove(this, actionIdx, color);
+                return Move.createMove(curAgent, actionIdx, color);
             }
 
-            return Move.createMove(this, actionIdx);
+            return Move.createMove(curAgent, actionIdx);
         }
 
         //initalize card index based on the action index and the node's ordered legal moves
-        int cardIdx = node.getOrderedLegalMoves().get(actionIdx);
+        int cardIdx = actionIdx;
+        //int cardIdx = node.getOrderedLegalMoves().get(actionIdx);
         HandView h = node.getGameView().getHandView(node.getLogicalPlayerIdx());
         Card c = h.getCard(cardIdx);
 
@@ -413,21 +473,19 @@ public class UCTAgent
             } else {
                 color = bestColor(h);
             }
-
-            return Move.createMove(this, cardIdx, color);
+            return Move.createMove(curAgent, cardIdx, color);
         }
-
-        return Move.createMove(this, cardIdx);
+        return Move.createMove(curAgent, cardIdx);
     }
 
 
     //color helper function
-    private Color bestColor(final HandView h) {
+    private static Color bestColor(final HandView h) {
         int countBlue = 0;
         int countGreen = 0;
         int countRed = 0;
         //yk
-        int countAsians = 0;
+        int countYellow = 0;
 
         for (int i = 0; i < h.size(); i++) {
             Card card = h.getCard(i);
@@ -439,7 +497,7 @@ public class UCTAgent
             if (card.color() == Color.BLUE) countBlue++;
             if (card.color() == Color.GREEN) countGreen++;
             if (card.color() == Color.RED) countRed++;
-            if (card.color() == Color.YELLOW) countAsians++;
+            if (card.color() == Color.YELLOW) countYellow++;
         }
 
 
@@ -454,10 +512,10 @@ public class UCTAgent
             maxCount = countRed;
             color = Color.RED;
         }
-        if (countAsians > maxCount) {
+        if (countYellow > maxCount) {
             color = Color.YELLOW;
         }
-
+        //System.out.println(color);
         return color;
     }
 
@@ -478,6 +536,20 @@ public class UCTAgent
         }
 
         return -1;
+    }
+
+    // Helper to construct game objects from a game view
+    public static Game constructGame(GameView gView) {
+        Agent[] a = new Agent[gView.getNumPlayers()];
+        Hand[] hands = new Hand[gView.getNumPlayers()];
+        for (int i = 0; i < a.length; i++) {
+            int pIdx = gView.getPlayerOrder().getAgentIdx(i);
+            a[i] = new UCTAgent(pIdx, Long.MAX_VALUE);
+            hands[i] = new Game(gView).getHand(i);
+        }
+
+        Game g = new Game(gView.getDrawPile(), hands, Observability.PARTIAL_NO_DECK, gView, a);
+        return g;
     }
 
     //makes fake agents to play against for sake of the simulations
@@ -633,5 +705,4 @@ public class UCTAgent
             }
         }
     }
-
 }
