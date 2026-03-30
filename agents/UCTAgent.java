@@ -176,7 +176,7 @@ public class UCTAgent
                 Move m = Move.createMove(constructGame(trav.getGameView()).getAgent(trav.getLogicalPlayerIdx()), Node.NoLegalMovesIdxDefaults.DrawUnresolvedCardsIdxs.MOVE_IDX);
 
                 // If the qCount is 0 then the node is unexpanded so end the while loop to expand that node
-                if (trav.getQCount(0) == 0) {
+                if (trav.getQCount(Node.NoLegalMovesIdxDefaults.DrawUnresolvedCardsIdxs.MOVE_IDX) == 0) {
                     s.push(Node.NoLegalMovesIdxDefaults.DrawUnresolvedCardsIdxs.MOVE_IDX);
                     trav = trav.getChild(m);
                     newNode = true;
@@ -189,12 +189,12 @@ public class UCTAgent
                 int playIdx = Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.PLAY_CARD_MOVE_IDX;
 
                 // In either of the first cases, one of the two hasn't yet been expanded so we just expand that node
-                if (trav.getQCount(0) == 0) {
+                if (trav.getQCount(keepIdx) == 0) {
                     //Move m = Move.createMove(this, keepIdx);
                     s.push(keepIdx);
                     trav = trav.getChild(makeTreeMove(trav, keepIdx, false));
                     newNode = true;
-                } else if (trav.getQCount(1) == 0) {
+                } else if (trav.getQCount(playIdx) == 0) {
                     Move m = makeTreeMove(trav, playIdx, false);
                     s.push(playIdx);
                     trav = trav.getChild(m);
@@ -247,15 +247,15 @@ public class UCTAgent
             //get move index from stack so we can update corrent move values
             int moveIdx = s.pop(); 
             Node travParent = trav.getParent();
-            if (travParent.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
-                moveIdx = 0;
-            } else if (travParent.getNodeState() == NodeState.NO_LEGAL_MOVES_MAY_PLAY_DRAWN_CARD) {
-                if (moveIdx == Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.KEEP_CARD_MOVE_IDX) {
-                    moveIdx = 0;
-                } else {
-                    moveIdx = 1;
-                }
-            }
+            // if (travParent.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
+            //     moveIdx = 0;
+            // } else if (travParent.getNodeState() == NodeState.NO_LEGAL_MOVES_MAY_PLAY_DRAWN_CARD) {
+            //     if (moveIdx == Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.KEEP_CARD_MOVE_IDX) {
+            //         moveIdx = 0;
+            //     } else {
+            //         moveIdx = 1;
+            //     }
+            // }
 
             // Update the count
             travParent.setQCount(moveIdx, travParent.getQCount(moveIdx) + 1);
@@ -336,6 +336,8 @@ public class UCTAgent
             // Get Q values based on the move indices that are preset for this particular state
             double playVal = node.getQValue(Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.PLAY_CARD_MOVE_IDX);
             double keepVal = node.getQValue(Node.NoLegalMovesIdxDefaults.DrawSingleCardIdxs.KEEP_CARD_MOVE_IDX);
+            // double playVal = node.getQValue(1);
+            // double keepVal = node.getQValue(0);
 
             GameView gameView = node.getGameView();
             HandView h = this.presentGameView.getHandView(node.getLogicalPlayerIdx());
@@ -353,7 +355,7 @@ public class UCTAgent
             } else {
                 return null;
             }
-        } else {
+        } else if (state == Node.NodeState.HAS_LEGAL_MOVES) {
             int bestIdx = -1;
             float bestQVal = -1;  
             int numMoves = node.getOrderedLegalMoves().size();
@@ -378,6 +380,8 @@ public class UCTAgent
             }
 
             return Move.createMove(this, bestIdx);
+        } else {
+            return null;
         }
     }
 
@@ -389,7 +393,7 @@ public class UCTAgent
             //return n.getLogicalPlayerIdx();
         }
 
-        Game g = constructGame(n.getGameView());
+        Game g = gameSim(n.getGameView());
 
         if (n.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
             // Just recurse on the next player with no card played
@@ -427,7 +431,7 @@ public class UCTAgent
 
     //helper function to create a move based on the node and action index given, also takes in boolean to determine if we are doing random colors or not
     private Move makeTreeMove(final Node node, final int actionIdx, final boolean randomColor) {
-        Game g = constructGame(node.getGameView());
+        Game g = gameSim(node.getGameView());
         Agent curAgent = g.getAgent(node.getLogicalPlayerIdx());
         //check if we have no legal moves and still need to draw a a card
         if (node.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
