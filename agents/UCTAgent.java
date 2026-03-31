@@ -1,4 +1,4 @@
-package src.pas.uno.agents;
+package src.pas.UnoBot440.agents;
 
 
 // SYSTEM IMPORTS
@@ -34,7 +34,7 @@ import java.util.Collections;
 public class UCTAgent
     extends MCTSAgent
 {
-
+    private static long nodesCreated = 0;
     private Integer lastDrawnCardIdx;
     private GameView presentGameView;
     private final long searchBudgetInMs;
@@ -50,6 +50,7 @@ public class UCTAgent
         {
             super(game, logicalPlayerIdx, parent);
             children = new HashMap<Integer, Node>();
+            nodesCreated += 1;
         }
 
         public Map<Integer, Node> getChildren() {
@@ -137,11 +138,19 @@ public class UCTAgent
     {
         this.lastDrawnCardIdx = drawnCardIdx;
         this.presentGameView = game;
+        nodesCreated = 0;
 
+        System.out.println("Starting search");
         Game rootGame = gameSim(game);
+        System.out.println("Simulating game");
         Node root = new MCTSNode(rootGame.getOmniscientView(),
                                 rootGame.getPlayerOrder().getCurrentLogicalPlayerIdx(),
                                 null);
+        if (root.getNodeState() == NodeState.HAS_LEGAL_MOVES || root.getNodeState() == NodeState.NO_LEGAL_MOVES_MAY_PLAY_DRAWN_CARD || root.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
+            System.out.println(root.getNodeState());
+        } else {
+            System.out.println("Forced to draw card but can't play it");
+        }
 
         //used to deterimine which player's perspective we are doing the search from for the backpropagation step
         int playerIdx = this.getLogicalPlayerIdx();
@@ -152,7 +161,7 @@ public class UCTAgent
             && System.currentTimeMillis() - startTime < this.searchBudgetInMs - 100) {
             expandNode(root, playerIdx);
         }
-
+        System.out.println("Returning from search with nodes created: " + nodesCreated);
         return root;
     }
 
@@ -393,7 +402,7 @@ public class UCTAgent
             //return n.getLogicalPlayerIdx();
         }
 
-        Game g = gameSim(n.getGameView());
+        Game g = constructGame(n.getGameView());
 
         if (n.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
             // Just recurse on the next player with no card played
@@ -431,7 +440,7 @@ public class UCTAgent
 
     //helper function to create a move based on the node and action index given, also takes in boolean to determine if we are doing random colors or not
     private Move makeTreeMove(final Node node, final int actionIdx, final boolean randomColor) {
-        Game g = gameSim(node.getGameView());
+        Game g = constructGame(node.getGameView());
         Agent curAgent = g.getAgent(node.getLogicalPlayerIdx());
         //check if we have no legal moves and still need to draw a a card
         if (node.getNodeState() == NodeState.NO_LEGAL_MOVES_UNRESOLVED_CARDS_PRESENT) {
@@ -574,7 +583,7 @@ public class UCTAgent
     private Game gameSim(final GameView view) {
         int numPlayers = view.getNumPlayers();
         List<Card> remainingCards = deckBuilder();
-
+        System.out.println("Exiting from deck builder call");
         for (Card c : view.getDrawPile()) {
             if (!isUnknown(c)) {
                 removeKnownCard(remainingCards, c);
@@ -593,60 +602,82 @@ public class UCTAgent
             }
         }
 
+        Hand[] hands = new Hand[numPlayers];
         for (int playerIdx = 0; playerIdx < numPlayers; playerIdx++) {
             HandView h = view.getHandView(playerIdx);
-
+            Hand hand = new Hand();
             for (int cardIdx = 0; cardIdx < h.size(); cardIdx++) {
                 Card c = h.getCard(cardIdx);
+                hand.add(normalizeCard(c));
 
                 if (!isUnknown(c)) {
                     removeKnownCard(remainingCards, c);
                 }
             }
+            hands[playerIdx] = hand;
         }
 
         Collections.shuffle(remainingCards, getRandom());
 
         //gives a new hand to each player
         int nextCardIdx = 0;
-        Hand[] hands = new Hand[numPlayers];
+        // Hand[] hands = new Hand[numPlayers];
 
-        //iterates through every players hand to give them cards
-        for (int playerIdx = 0; playerIdx < numPlayers; playerIdx++) {
-            HandView h = view.getHandView(playerIdx);
-            Hand hand = new Hand();
+        // //iterates through every players hand to give them cards
+        // for (int playerIdx = 0; playerIdx < numPlayers; playerIdx++) {
+        //     HandView h = view.getHandView(playerIdx);
+        //     Hand hand = new Hand();
 
-            for (int cardIdx = 0; cardIdx < h.size(); cardIdx++) {
-                Card c = h.getCard(cardIdx);
+        //     for (int cardIdx = 0; cardIdx < h.size(); cardIdx++) {
+        //         Card c = h.getCard(cardIdx);
 
-                if (isUnknown(c)) {
-                    hand.add(remainingCards.get(nextCardIdx));
-                    nextCardIdx += 1;
-                } else {
-                    hand.add(normalizeCard(c));
-                }
+        //         if (isUnknown(c)) {
+        //             hand.add(remainingCards.get(nextCardIdx));
+        //             nextCardIdx += 1;
+        //         } else {
+        //             hand.add(normalizeCard(c));
+        //         }
 
-            }
+        //     }
 
-            hands[playerIdx] = hand;
-        }
-
+        //     hands[playerIdx] = hand;
+        // }
+        System.out.println("Reached point to draw cards");
+        System.out.println(remainingCards.size() + ", " + view.getDrawPileSize());
         //all this does is build the draw pile based on known and unknown cards, proceeds to inflate pile to proper size
         Deck drawPile = new Deck(false);
         for (Card c : view.getDrawPile()) {
             if (isUnknown(c)) {
-                drawPile.add(remainingCards.get(nextCardIdx));
-                nextCardIdx += 1;
+                //System.out.println("Unknown card");
+                if (remainingCards.isEmpty() || nextCardIdx == remainingCards.size()) {
+                    Card rc = null; 
+                    while (rc == null || rc.value() == Value.UNKNOWN || rc.color() == Color.UNKNOWN) {
+                        rc = new Card(Color.getRandomColor(getRandom()), Value.getRandomValue(getRandom()));
+                    }
+                    drawPile.add(rc);
+                } else {
+                    drawPile.add(remainingCards.get(nextCardIdx));
+                    nextCardIdx += 1;
+                }
             } else {
                 drawPile.add(normalizeCard(c));
             }
         }
 
+        System.out.println("Adding last bits");
         while (drawPile.size() < view.getDrawPileSize()) {
-            drawPile.add(remainingCards.get(nextCardIdx));
-            nextCardIdx += 1;
+            if (remainingCards.isEmpty() || nextCardIdx == remainingCards.size()) {
+                    Card rc = null; 
+                    while (rc == null || rc.value() == Value.UNKNOWN || rc.color() == Color.UNKNOWN) {
+                        rc = new Card(Color.getRandomColor(getRandom()), Value.getRandomValue(getRandom()));
+                    }
+                    drawPile.add(rc);
+                } else {
+                    drawPile.add(remainingCards.get(nextCardIdx));
+                    nextCardIdx += 1;
+                }
         }
-
+        System.out.println("Returning from call to gamesim");
         return new Game(drawPile, hands, Observability.FULL, view, fakeAgent(view));
     }
 
